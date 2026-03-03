@@ -80,6 +80,51 @@ Pulseは「自社開発のHUB」として機能し、各層の外部システム
 | AP/Billing Ops | メール/フォルダから請求書受領 → OCR抽出（金額・ベンダー・期限）→ CMDB照合 → 担当者自動振り分け |
 | Procurement/VendorOps | KDDI等への発注要件定義・社内承認・発注構造化メール生成・進捗追跡・納品後台帳更新 |
 | FinOps-lite | IT支出ダッシュボード・ベンダー/契約/実績/配賦/予算管理・未使用ライセンス検知 |
+| **WebOps Agent** | **APIが存在しないレガシー管理画面・SaaSポータルをブラウザ自動化で操作（詳細は 2-3-b 参照）** |
+
+### 2-3-b. WebOps Agent（ブラウザ自動化エージェント）
+
+APIが存在しないレガシーシステム・ベンダーポータル・ネットワーク機器の Web GUI を操作するための「最後の手段（Last Resort）」エージェント。他エージェントが API 経由で完結できない場合にのみ呼び出す。
+
+#### 技術スタック
+
+| コンポーネント | 採用技術 |
+|---|---|
+| 操作エンジン | Playwright（ヘッドレスブラウザ）|
+| 推論・視覚エンジン | Claude claude-sonnet-4-6（Computer Use API）または GPT-4o Vision |
+| セッション管理 | Cookie / storage-state の暗号化保存（Fernet + Key Vault）|
+
+AIにブラウザのスクリーンショットおよびDOMを渡し、「どこをクリックするか・何を入力するか」を判断させる。
+
+#### 想定ユースケース
+
+| ユースケース | 概要 |
+|---|---|
+| レガシーSaaSの設定 | APIが提供されていない古い勤怠管理システムへのユーザー追加 |
+| ベンダーポータルの操作 | KDDI・大塚商会などの発注ポータルで API がない画面での機器購入手続き |
+| ネットワーク機器の Web GUI | CLI/API が塞がれているルーター・ファイアウォールの管理画面へのログインと設定変更 |
+
+#### リスクと制約（Candor）
+
+| リスク | 内容 |
+|---|---|
+| Brittleness（即死リスク） | SaaS 側が UI を変更するだけで自動化が無予告で停止する。API と異なりバージョン管理の概念がない |
+| MFA / CAPTCHA の壁 | 管理画面ログインに要求される多要素認証・CAPTCHA は AI 単独での突破が困難（かつ規約違反リスクあり） |
+| Blast Radius（誤操作の影響） | 「無効化」「削除」ボタンの誤クリックがデータロストに直結する。API のようなパラメータ検証が存在しない |
+
+#### Guardrails（安全組み込み要件）
+
+**① ドライランスクリーンショットによる HITL 承認**
+- 「保存」「確定」ボタンを押す直前で処理を一時停止
+- 入力済み画面のスクリーンショットを Agent Console へ送信
+- Growtect NOC 担当者が目視確認したうえで「確定」指示を出すフローを必須とする
+
+**② Session Injection（人間によるセッション渡し）**
+- MFA 突破のため、Growtect 運用担当者が一度ブラウザでログインし、その Session Cookie を暗号化して WebOps Agent に渡す仕組みを構築
+- Cookie は操作完了後に即時破棄。保存期間はタスク実行中のみ
+
+**③ Read 優先の原則**
+- Write（設定変更）操作は最高リスク扱い。まず Read（スクレイピングによる CMDB 同期）から適用し、Write は Growtect 内部での十分な実績蓄積後に解禁する
 
 ### 2-4. 台帳レイヤ（Single Source of Truth）
 
@@ -225,6 +270,7 @@ Reception Agent・Knowledge Agentは自社実装であるため、「回答が�
 | 暗号化 | cryptography（Fernet）+ Azure Key Vault / AWS KMS |
 | ログ | structlog（JSON形式） |
 | マイグレーション | Alembic |
+| ブラウザ自動化（WebOps Agent） | Playwright + Claude Computer Use API / GPT-4o Vision |
 
 ---
 
