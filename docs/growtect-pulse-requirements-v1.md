@@ -51,6 +51,17 @@ Pulseは「自社開発のHUB」として機能し、各層の外部システム
 - 引き継ぎ機能（担当者変更）
 - 監査ログの閲覧・エクスポート
 
+**主要画面構成（Next.js 15 + shadcn/ui）**
+
+| 画面 | 主要コンポーネント | 備考 |
+|---|---|---|
+| ダッシュボード | 承認待ちカウント・直近チケット一覧・LLMコスト推移グラフ | トップページ |
+| 承認キュー | ActionProposal カード（提案内容・リスクスコア・承認/却下ボタン）| Write 操作ごとに1カード |
+| チケット詳細 | 状態遷移タイムライン・AIターン別ログ・会話サマリー | チケット全履歴の確認 |
+| WebOps 承認パネル | ドライランスクリーンショット表示・「確定実行」ボタン | WebOps Agent 専用 |
+| 監査ログ | actor / event_type / ai_model フィルタ・CSV エクスポート | コンプライアンス対応 |
+| CMDB 台帳 | デバイス・ユーザー・SaaS サービス検索・編集 | Read-only（変更は承認ゲート経由）|
+
 ### 2-3. AIオーケストレーション（多段エージェント構成）
 
 **オーケストレーター（入口の司令塔）**
@@ -122,6 +133,10 @@ AIにブラウザのスクリーンショットおよびDOMを渡し、「どこ
 **② Session Injection（人間によるセッション渡し）**
 - MFA 突破のため、Growtect 運用担当者が一度ブラウザでログインし、その Session Cookie を暗号化して WebOps Agent に渡す仕組みを構築
 - Cookie は操作完了後に即時破棄。保存期間はタスク実行中のみ
+- **CAPTCHA への対応方針（規約遵守）**：CAPTCHA バイパスツールの使用は原則禁止。以下の代替手順を採用する：
+  1. 担当者が手動でログインし、CAPTCHA 突破後の Cookie を Sesssion Injection で渡す
+  2. ベンダーに自動化用の専用アカウント（CAPTCHA 免除 IP ホワイトリスト or API 発行）を交渉する
+  3. 上記が不可の場合は WebOps Agent の対象外とし、手動運用を継続。無理な自動化は行わない
 
 **③ Read 優先の原則**
 - Write（設定変更）操作は最高リスク扱い。まず Read（スクレイピングによる CMDB 同期）から適用し、Write は Growtect 内部での十分な実績蓄積後に解禁する
@@ -198,6 +213,12 @@ CREATE POLICY tenant_isolation ON tickets
 - 開発者がクエリで `WHERE tenant_id` を書き忘れても、DBが自動的に他テナントのデータへのアクセスをブロック
 - アプリケーション用 DB ユーザーには `BYPASSRLS` 権限を付与しない（スーパーユーザーのみバイパス可）
 
+**パフォーマンス検証要件（RLS 特有の注意点）：**
+- RLS は高スループット環境でポリシー評価のオーバーヘッドが発生するため、Phase 1 完了後に必ず負荷試験を実施する
+- `tenant_id` カラムに B-tree インデックスを必ず付与し、ポリシー評価コストを最小化する
+- 結合を多用するクエリは `EXPLAIN ANALYZE` で RLS の影響を確認し、必要に応じて部分インデックスを検討する
+- 許容基準：同時 100 リクエスト下で p95 レイテンシが RLS なし時比 1.5 倍以内
+
 ### 3-3. 認証・アクセス制御
 
 - **MFA + SSO**：全アクセスにMFAを必須。SAML/OIDC連携でシングルサインオン
@@ -221,10 +242,57 @@ CREATE POLICY tenant_isolation ON tickets
 - 承認者は権限レベルを事前登録。権限不足者の承認は拒否
 - 承認期限：24時間。期限切れはエスカレーション
 
+**HITL フェーズ別自動化ロードマップ（長期負担軽減）：**
+
+| フェーズ | HITL 適用範囲 | 自動承認の条件 |
+|---|---|---|
+| Phase 1–2 | 全 Write 操作を HITL 必須 | なし（人間が全件承認） |
+| Phase 3 | 低リスク定型操作の自動承認解禁 | LLM Evals スコア ≥ 95%・過去 30 日間のエラー率 0% 実績を積んだアクション種別のみ |
+| Phase 4 以降 | 中リスク操作の自動承認拡大 | CISO の書面承認 + 月次レビューによる範囲更新 |
+
+- 自動承認に移行した操作も audit_logs への完全記録は維持する
+- 誤操作・インシデント発生時は即時 HITL 必須に戻す「フォールバック規則」を設ける
+
 ### 4-2. Policy-as-Code
 
 - 業務ルール・法制度（インボイス制度・電帳法等）をYAMLコードとして管理
 - 法改正時は基盤コードを修正するだけで全エージェントの判断基準が即時更新
+
+**YAML ポリシー定義例：**
+
+```yaml
+# policies/invoice_act_2023.yaml  （インボイス制度対応）
+policy_id: invoice_act_2023
+description: "適格請求書等保存方式（2023年10月施行）"
+rules:
+  - id: require_registration_number
+    trigger: ap_billing_ops.invoice_received
+    condition: vendor.registration_number is null
+    action: reject
+    message: "適格請求書発行事業者登録番号が未確認です。手動確認を依頼します。"
+  - id: tax_rate_validation
+    trigger: ap_billing_ops.invoice_received
+    condition: invoice.tax_rate not in [0.08, 0.10]
+    action: flag_for_review
+    message: "税率が標準値（8%/10%）と異なります。"
+
+# policies/electronic_bookkeeping_act.yaml  （電帳法対応）
+policy_id: electronic_bookkeeping_act
+description: "電子帳簿保存法（2024年1月義務化）"
+rules:
+  - id: require_timestamp
+    trigger: ap_billing_ops.invoice_stored
+    condition: invoice.received_at is null
+    action: reject
+    message: "受領日時の記録が必須です（電帳法 第4条）。"
+  - id: immutable_storage
+    trigger: ap_billing_ops.invoice_stored
+    action: enforce_immutable
+    message: "電子取引データは改ざん防止措置が必要です。S3 Object Lock / Azure Immutable Blob に保存。"
+```
+
+- ポリシー YAML は Git 管理し、Pull Request レビューを経て本番反映
+- 法改正時の影響範囲は `policy_id` で追跡可能。法務チームが YAML を直接レビューする運用を想定
 
 ### 4-3. 監査ログの完全性
 
@@ -345,6 +413,21 @@ cmdb_user_service_accounts   ユーザー×サービス紐付け
 - DRESS CODE連携：ドリフト検知・ゼロタッチデプロイ
 - マルチLLMフォールバック完全実装
 
+### Phase 4 — スケールアウト・自律化拡張
+
+**トラフィック増大への対応**
+- Azure Container Apps / AWS ECS のオートスケーリング設定（CPU 70% トリガー）
+- Celery ワーカーの水平スケール（テナント数増加に伴うキュー分割設計）
+- pgvector インデックスを HNSW へ移行し、RAG 検索レイテンシを維持
+
+**エージェント拡張**
+- WebOps Agent の Write 操作を HITL 実績に基づき段階的に自動承認解禁
+- 新規 SaaS 連携の追加を標準化：「エージェント追加テンプレート（FastAPI + Celery + SDK）」を整備し、1 エージェントあたり 2 週間以内での追加を目標とする
+
+**マルチリージョン対応（必要に応じて）**
+- 顧客データ主権要件（GDPR等）に対応するため、リージョン別テナント分離設計を検討
+- 現時点では国内リージョンのみだが、海外展開時のアーキテクチャ変更を最小化する設計を Phase 3 で仕込む
+
 ---
 
 ## 8. 重要設計決定（ADR）
@@ -360,7 +443,11 @@ cmdb_user_service_accounts   ユーザー×サービス紐付け
 
 ---
 
-## 9. 検証方法（End-to-End テスト）
+## 9. 検証方法（テスト戦略）
+
+### 9-1. E2E テスト（手動）
+
+ステージング環境で担当者が手動実行。CI/CD には組み込まない（Slack / 外部 API の副作用があるため）。
 
 1. **Slackメンション受付** → チケットが `RECEIVED` でDB保存される
 2. **Celeryタスク実行** → `ANALYZING` に遷移 → Azure OpenAI APIが呼ばれる → 監査ログに記録
@@ -369,6 +456,24 @@ cmdb_user_service_accounts   ユーザー×サービス紐付け
 5. **実行完了** → `COMPLETED` → Slackスレッドに完了通知
 6. **却下ボタン** → 否認理由モーダル → `DENIED` → チケットクローズ
 7. **ITIL違反依頼** → `reject_request` → Slackに却下理由を返信
+
+### 9-2. 自動テスト（CI/CD に組み込む）
+
+PR マージ時に GitHub Actions / Azure DevOps Pipelines で自動実行。
+
+| テスト種別 | ツール | 対象 | 自動化 |
+|---|---|---|---|
+| ユニットテスト | pytest | エージェントロジック・ポリシー評価・RLS ポリシー SQL | ✅ 必須 |
+| 統合テスト | pytest + testcontainers | FastAPI ↔ PostgreSQL ↔ Redis（Docker Compose） | ✅ 必須 |
+| LLM Evals | Ragas / DeepEval | RAG 忠実性・ハルシネーション検出 | ✅ Phase 3 以降 |
+| 負荷テスト | Locust | 同時 100 リクエスト下の RLS レイテンシ | ✅ Phase 2 完了後 |
+| セキュリティスキャン | Bandit（Python）+ Trivy（コンテナ） | 既知脆弱性・シークレットの平文混入検出 | ✅ 必須 |
+| WebOps 動作確認 | Playwright テストスクリプト | ドライランスクリーンショット生成・Session Injection | 手動（副作用あり）|
+
+### 9-3. ロールバック基準
+
+- 本番デプロイ後 15 分以内にエラー率 > 1% を検知した場合、前バージョンへ自動ロールバック
+- DB マイグレーション（Alembic）は必ず `downgrade` スクリプトを作成してからマージを許可
 
 ---
 
@@ -390,8 +495,12 @@ pandocが未インストールのため、Python（markdown + weasyprint）で�
 
 ## 10. 未確定・今後詰める事項
 
-- Zooba → Pulse間のWebhook仕様詳細（ZoobaのAPIドキュメント要確認）
-- LMIS REST APIのエンドポイント仕様（ユニリタに確認）
-- DRESS CODEのAPI提供有無・仕様（ベンダー確認）
-- KDDIまとめてオフィスのAPI仕様・契約要件（KDDI担当者確認）
-- 本番インフラ：Azure Container Apps vs AWS ECS 最終選定
+Phase 1 MVP の開発開始前に **P1（必須）** を解消することを必須とする。
+
+| 優先度 | 事項 | アクション | 期限 |
+|---|---|---|---|
+| P1 | Zooba → Pulse 間の Webhook 仕様詳細 | Zooba 社に API ドキュメント・サンドボックス環境を要求 | Phase 1 開始前 |
+| P1 | LMIS REST API のエンドポイント仕様 | ユニリタ担当者と技術 MTG を設定 | Phase 1 開始前 |
+| P2 | DRESS CODE の API 提供有無・仕様 | ベンダー確認（API 未提供なら WebOps Agent で代替） | Phase 2 開始前 |
+| P2 | KDDI まとめてオフィスの API 仕様・契約要件 | KDDI 担当者に発注 API の有無を確認。未提供なら Procurement/VendorOps をメール送信型に変更 | Phase 2 開始前 |
+| P3 | 本番インフラ：Azure Container Apps vs AWS ECS 最終選定 | コスト試算・SLA 比較を行い最終決定 | Phase 3 開始前 |
