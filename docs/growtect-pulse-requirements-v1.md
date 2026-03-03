@@ -27,9 +27,9 @@ Pulseは「自社開発のHUB」として機能し、各層の外部システム
 
 **インターフェース**
 - Slack / Teams / Discord 上での自然言語による申請受付
-- フロントエンドの対話・自動回答には **Zooba**（既存SaaS）を活用
-  - ZoobaはSlack/Teamsにネイティブ統合され、社内ナレッジ（Notion/Confluenceなど）を参照して一次回答する
-  - Zoobaが解決できない依頼のみPulseオーケストレーターへエスカレーション
+- Pulse Bot が一次受付・自動回答・ヒアリングを担当
+  - 社内ナレッジ（Notion/Confluenceなど）を RAG で参照して一次回答
+  - 自動解決できない依頼はオーケストレーターへエスカレーション
 
 **AIの主な責務**
 - 不足項目のヒアリング（追加情報の自動収集）
@@ -65,7 +65,7 @@ Pulseは「自社開発のHUB」として機能し、各層の外部システム
 ### 2-3. AIオーケストレーション（多段エージェント構成）
 
 **オーケストレーター（入口の司令塔）**
-- Zooba/Slackからのイベントを受信し、ITIL 4規律に基づいて依頼を分類・ルーティング
+- Slackからのイベントを受信し、ITIL 4規律に基づいて依頼を分類・ルーティング
 - Read操作は自律実行。Write操作は `ActionProposal` として生成し、承認ゲートへ送付
 - ITIL規律違反・セキュリティリスク依頼は `reject_request` で即座に却下（監査役AI）
 
@@ -155,7 +155,7 @@ AIにブラウザのスクリーンショットおよびDOMを渡し、「どこ
 
 | カテゴリ | システム | 連携方式 |
 |---|---|---|
-| 対話フロント | Zooba | Webhook → Pulse API |
+| 対話フロント | Slack / Teams | Bolt for Python（Slack）/ Bot Framework（Teams）|
 | ITSM/台帳 | LMIS（ユニリタ） | REST API（Salesforce基盤） |
 | 調達・物流 | KDDIまとめてオフィス | REST API（発注・追跡） |
 | エンドポイント管理 | DRESS CODE | API（ゼロタッチデプロイ・プロファイル適用） |
@@ -436,7 +436,7 @@ cmdb_user_service_accounts   ユーザー×サービス紐付け
 |---|---|---|
 | チケット正本 | Pulse自前DB | LMIS依存リスク回避。Pulseがデータ主権を持つ |
 | AI推論 | マルチLLM（Azure + Bedrock） | 単一障害点排除・コンプライアンス（データ非学習保証） |
-| 対話フロント | Zooba連携 | Zoobaが一次回答をさばき、Pulseは複雑処理に特化 |
+| 対話フロント | Pulse Bot（自前実装） | Slack Bolt で直接受付。外部 SaaS 依存を排除しデータ主権を確保 |
 | Write実行 | HITL必須（承認ゲート） | ハルシネーションによる誤操作・誤発注を防止 |
 | 非同期処理 | Celery + Redis | Slackの3秒タイムアウト制約の回避 |
 | 暗号化 | Fernet + Key Vault/KMS | SaaS APIトークンの平文保存を禁止 |
@@ -499,7 +499,6 @@ Phase 1 MVP の開発開始前に **P1（必須）** を解消することを必
 
 | 優先度 | 事項 | アクション | 期限 |
 |---|---|---|---|
-| P1 | Zooba → Pulse 間の Webhook 仕様詳細 | Zooba 社に API ドキュメント・サンドボックス環境を要求 | Phase 1 開始前 |
 | P1 | LMIS REST API のエンドポイント仕様 | ユニリタ担当者と技術 MTG を設定 | Phase 1 開始前 |
 | P2 | DRESS CODE の API 提供有無・仕様 | ベンダー確認（API 未提供なら WebOps Agent で代替） | Phase 2 開始前 |
 | P2 | KDDI まとめてオフィスの API 仕様・契約要件 | KDDI 担当者に発注 API の有無を確認。未提供なら Procurement/VendorOps をメール送信型に変更 | Phase 2 開始前 |
