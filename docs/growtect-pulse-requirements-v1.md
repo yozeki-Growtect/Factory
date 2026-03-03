@@ -55,12 +55,20 @@ Pulseは「自社開発のHUB」として機能し、各層の外部システム
 
 | 画面 | 主要コンポーネント | 備考 |
 |---|---|---|
-| ダッシュボード | 承認待ちカウント・直近チケット一覧・LLMコスト推移グラフ | トップページ |
-| 承認キュー | ActionProposal カード（提案内容・リスクスコア・承認/却下ボタン）| Write 操作ごとに1カード |
+| ダッシュボード | 承認待ちカウント・自分担当チケット一覧・LLMコスト推移グラフ | ログインユーザーのロール（`it_manager` / `department_head` / `ciso`）で表示内容をパーソナライズ。「今日自分が対応すべきこと」を最上部に集約 |
+| 承認キュー | ActionProposal カード（提案内容・**リスクバッジ**・影響ユーザー数・操作対象サービス・承認/却下ボタン）| リスクバッジは 🟢低 / 🟡中 / 🔴高 の3段階で色分け。Write 操作ごとに1カード |
 | チケット詳細 | 状態遷移タイムライン・AIターン別ログ・会話サマリー | チケット全履歴の確認 |
-| WebOps 承認パネル | ドライランスクリーンショット表示・「確定実行」ボタン | WebOps Agent 専用 |
+| WebOps 承認パネル | ドライランスクリーンショット表示・「確定実行」ボタン | WebOps Agent 専用。Slack には DeepLink のみ通知し、実際の確認・承認はこの画面で行う |
 | 監査ログ | actor / event_type / ai_model フィルタ・CSV エクスポート | コンプライアンス対応 |
 | CMDB 台帳 | デバイス・ユーザー・SaaS サービス検索・編集 | Read-only（変更は承認ゲート経由）|
+
+**Slack と Agent Console の承認体験の使い分け：**
+
+| 操作種別 | 承認チャネル | 理由 |
+|---|---|---|
+| 低リスク定型操作（アカウント権限変更・ライセンス付与など） | Slack Block Kit（承認/却下ボタン） | 簡易操作で完結。承認者の文脈切り替えを最小化 |
+| 中〜高リスク操作（アカウント削除・設定変更・発注など） | Slack に DeepLink 通知 → Agent Console で承認 | リスクスコア・影響範囲・AI 判断根拠を画面全体で確認してから承認 |
+| WebOps 操作（ブラウザ自動化） | Slack に DeepLink 通知 → WebOps 承認パネルで承認 | ドライランスクリーンショットの目視確認が必須のため Agent Console のみ |
 
 ### 2-3. AIオーケストレーション（多段エージェント構成）
 
@@ -74,9 +82,11 @@ Pulseは「自社開発のHUB」として機能し、各層の外部システム
 |---|---|
 | InfraOps | ネットワーク障害・端末不調・接続問題の切り分け診断 |
 | SystemOps | SaaSアプリケーションの設定確認・運用判断 |
-| IAM Agent | Google Workspace / M365 アカウント作成・削除・権限変更 |
-| Google Workspace Agent | Google Admin SDK 経由の詳細操作 |
-| M365 Agent | Microsoft Graph API 経由の詳細操作 |
+| IAM Agent | 「誰に・どのサービスへの・どの権限を付与/削除するか」の意図解釈・承認判断・Google Workspace Agent / M365 Agent へのルーティング |
+| Google Workspace Agent | IAM Agent からの構造化指示を受け、Google Admin SDK / Directory API 経由でアカウント操作を実行（実行専用） |
+| M365 Agent | IAM Agent からの構造化指示を受け、Microsoft Graph API 経由でアカウント操作を実行（実行専用） |
+
+> **エージェント責務の境界**：IAM Agent は判断層（何をするか決定）、Google Workspace Agent / M365 Agent は実行層（どう操作するか）。IAM Agent が直接 SDK を呼ぶことはない。この分離により、将来的な対応 IdP の追加時に IAM Agent のロジックを変更せず実行エージェントのみ追加できる。
 
 **プロセス管理エージェント群**
 | エージェント | 責務 |
@@ -84,6 +94,7 @@ Pulseは「自社開発のHUB」として機能し、各層の外部システム
 | Inc/Prob | トラブル止血（一時対応）→ RCA → 恒久対策 → ナレッジ化 |
 | Change/Release | 変更影響範囲調査・手順作成・切り戻し・事後チェック管理 |
 | Project推進 | 新SaaS導入・全社移行の要件整理・タスク分解・進捗管理 |
+| **Policy Evaluation Agent** | **各エージェントのアクション前に YAML ポリシーをロード・評価し、許可 / 拒否 / 要フラグを返す。全エージェントから共通で呼び出されるポリシーゲートウェイ** |
 
 **バックオフィス拡張エージェント群**
 | エージェント | 責務 |
@@ -134,7 +145,7 @@ AIにブラウザのスクリーンショットおよびDOMを渡し、「どこ
 - MFA 突破のため、Growtect 運用担当者が一度ブラウザでログインし、その Session Cookie を暗号化して WebOps Agent に渡す仕組みを構築
 - Cookie は操作完了後に即時破棄。保存期間はタスク実行中のみ
 - **CAPTCHA への対応方針（規約遵守）**：CAPTCHA バイパスツールの使用は原則禁止。以下の代替手順を採用する：
-  1. 担当者が手動でログインし、CAPTCHA 突破後の Cookie を Sesssion Injection で渡す
+  1. 担当者が手動でログインし、CAPTCHA 突破後の Cookie を Session Injection で渡す
   2. ベンダーに自動化用の専用アカウント（CAPTCHA 免除 IP ホワイトリスト or API 発行）を交渉する
   3. 上記が不可の場合は WebOps Agent の対象外とし、手動運用を継続。無理な自動化は行わない
 
@@ -222,7 +233,10 @@ CREATE POLICY tenant_isolation ON tickets
 ### 3-3. 認証・アクセス制御
 
 - **MFA + SSO**：全アクセスにMFAを必須。SAML/OIDC連携でシングルサインオン
-- **Just-In-Time（JIT）アクセス制御**：AIがAPI実行する瞬間だけ必要なスコープを動的発行し、作業後に剥奪（ゼロトラスト）
+- **Just-In-Time（JIT）アクセス制御**：Google Workspace / M365 は OAuth 構造上の制約により「動的スコープ発行」は実装困難なため、以下の方式で代替する：
+  - 操作用サービスアカウントトークンは Vault / KMS に格納し、実行直前にのみ取得
+  - 操作完了後は即時 revoke（Google: `oauth2.revoke`、M365: `revokeSignInSessions`）
+  - 次回実行時に再発行する。常時有効なトークンを持たせないことでゼロトラストを実現
 - **承認権限階層**：`none < it_manager < department_head < ciso`
 
 ### 3-4. 可用性・整合性
@@ -230,6 +244,20 @@ CREATE POLICY tenant_isolation ON tickets
 - **マルチLLMフォールバック**：Primary/Secondaryの自動切り替えで業務継続
 - **ドリフト検知**：DRESS CODE / Intune から1時間ごとに自動ポーリングし、台帳と物理デバイスの差分を検知して修正提案を生成
 - **Celery非同期処理**：Slackの3秒タイムアウト制約をCeleryタスクキューで回避
+
+### 3-5. サービスレベル目標（SLA / RTO / RPO）
+
+| 指標 | Phase 1〜2 | Phase 3 以降 | 備考 |
+|---|---|---|---|
+| 稼働率（SLA） | 99.5%（月間 約3.6時間停止許容） | 99.9%（月間 約43分停止許容） | Phase 3 で本番インフラをフルマネージドに移行後に引き上げ |
+| RTO（目標復旧時間） | 1時間以内 | 30分以内 | 情シス代替システムのため業務停止リスクを考慮 |
+| RPO（目標復旧時点） | 1時間以内 | 15分以内 | PostgreSQL PITR（WAL アーカイブ）で実現。Azure Blob / S3 に継続転送 |
+
+**バックアップ・DR 方針：**
+- PostgreSQL の WAL を Azure Blob Storage / S3 へリアルタイム転送（`pgbackrest` または Supabase PITR）
+- 日次フルバックアップ + 1時間ごとの増分バックアップを 7日間保持（電帳法の7年保存対象データは別途 Immutable Storage へアーカイブ）
+- テナント単位の個別リストアに対応できるよう、バックアップ対象テーブルにテナントIDラベルを付与
+- 月次で DR 訓練（ステージング環境へのリストア検証）を実施し、RTO/RPO 達成を確認
 
 ---
 
@@ -240,7 +268,7 @@ CREATE POLICY tenant_isolation ON tickets
 - AIによるWrite操作（API実行・設定変更・アカウント操作）は必ず `PENDING_APPROVAL` を経由
 - Slackのインタラクティブメッセージ（Block Kit）で承認/却下ボタンを提示
 - 承認者は権限レベルを事前登録。権限不足者の承認は拒否
-- 承認期限：24時間。期限切れはエスカレーション
+- 承認期限：24時間。期限切れは承認権限の上位者（`it_manager` → `department_head` → `ciso`）へ自動エスカレーション。`ciso` レベルで期限切れの場合は Growtect NOC へ通知し、手動対応に切り替える
 
 **HITL フェーズ別自動化ロードマップ（長期負担軽減）：**
 
@@ -255,8 +283,20 @@ CREATE POLICY tenant_isolation ON tickets
 
 ### 4-2. Policy-as-Code
 
-- 業務ルール・法制度（インボイス制度・電帳法等）をYAMLコードとして管理
-- 法改正時は基盤コードを修正するだけで全エージェントの判断基準が即時更新
+**設計方針：人間可読な YAML × Policy Evaluation Agent による実行分離**
+
+- 業務ルール・法制度（インボイス制度・電帳法等）を **人間が読み書きできる YAML** として管理
+- YAML の構文チェック・ルール評価・エージェントへの適用は **Policy Evaluation Agent** が担当。法務チームや運用担当者は YAML の「意味」のみレビューすればよく、評価ロジックは意識しない
+- OPA/Rego のような専用言語は採用しない（可読性を最優先とするため）
+- 法改正時は YAML を修正するだけで全エージェントの判断基準が即時更新
+
+**役割分担：**
+
+| 担当 | 役割 |
+|---|---|
+| 法務・コンプライアンス担当者 | YAML ポリシーの内容レビュー・承認（PR レビュー） |
+| Growtect エンジニア | YAML スキーマ定義・Policy Evaluation Agent の実装・テスト |
+| Policy Evaluation Agent | 実行時に YAML を読み込み、各エージェントのアクション前にポリシー評価を実行 |
 
 **YAML ポリシー定義例：**
 
@@ -292,7 +332,8 @@ rules:
 ```
 
 - ポリシー YAML は Git 管理し、Pull Request レビューを経て本番反映
-- 法改正時の影響範囲は `policy_id` で追跡可能。法務チームが YAML を直接レビューする運用を想定
+- 法改正時の影響範囲は `policy_id` で追跡可能
+- Policy Evaluation Agent は起動時に YAML を全ロードし、ルールキャッシュを保持。Git へのマージをトリガーに自動リロード（再デプロイ不要）
 
 ### 4-3. 監査ログの完全性
 
@@ -477,6 +518,19 @@ PR マージ時に GitHub Actions / Azure DevOps Pipelines で自動実行。
 
 ---
 
+## 10. 未確定・今後詰める事項
+
+Phase 1 MVP の開発開始前に **P1（必須）** を解消することを必須とする。
+
+| 優先度 | 事項 | アクション | 期限 |
+|---|---|---|---|
+| P1 | LMIS REST API のエンドポイント仕様 | ユニリタ担当者と技術 MTG を設定 | Phase 1 開始前 |
+| P2 | DRESS CODE の API 提供有無・仕様 | ベンダー確認（API 未提供なら WebOps Agent で代替） | Phase 2 開始前 |
+| P2 | KDDI まとめてオフィスの API 仕様・契約要件 | KDDI 担当者に発注 API の有無を確認。未提供なら Procurement/VendorOps をメール送信型に変更 | Phase 2 開始前 |
+| P3 | 本番インフラ：Azure Container Apps vs AWS ECS 最終選定 | コスト試算・SLA 比較を行い最終決定 | Phase 3 開始前 |
+
+---
+
 ## 11. ドキュメント出力手順
 
 ### MDファイル
@@ -490,16 +544,3 @@ pandocが未インストールのため、Python（markdown + weasyprint）で�
 ```
 /home/user/Factory/docs/growtect-pulse-requirements-v1.pdf
 ```
-
----
-
-## 10. 未確定・今後詰める事項
-
-Phase 1 MVP の開発開始前に **P1（必須）** を解消することを必須とする。
-
-| 優先度 | 事項 | アクション | 期限 |
-|---|---|---|---|
-| P1 | LMIS REST API のエンドポイント仕様 | ユニリタ担当者と技術 MTG を設定 | Phase 1 開始前 |
-| P2 | DRESS CODE の API 提供有無・仕様 | ベンダー確認（API 未提供なら WebOps Agent で代替） | Phase 2 開始前 |
-| P2 | KDDI まとめてオフィスの API 仕様・契約要件 | KDDI 担当者に発注 API の有無を確認。未提供なら Procurement/VendorOps をメール送信型に変更 | Phase 2 開始前 |
-| P3 | 本番インフラ：Azure Container Apps vs AWS ECS 最終選定 | コスト試算・SLA 比較を行い最終決定 | Phase 3 開始前 |
