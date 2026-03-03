@@ -74,9 +74,11 @@ Pulseは「自社開発のHUB」として機能し、各層の外部システム
 |---|---|
 | InfraOps | ネットワーク障害・端末不調・接続問題の切り分け診断 |
 | SystemOps | SaaSアプリケーションの設定確認・運用判断 |
-| IAM Agent | Google Workspace / M365 アカウント作成・削除・権限変更 |
-| Google Workspace Agent | Google Admin SDK 経由の詳細操作 |
-| M365 Agent | Microsoft Graph API 経由の詳細操作 |
+| IAM Agent | 「誰に・どのサービスへの・どの権限を付与/削除するか」の意図解釈・承認判断・Google Workspace Agent / M365 Agent へのルーティング |
+| Google Workspace Agent | IAM Agent からの構造化指示を受け、Google Admin SDK / Directory API 経由でアカウント操作を実行（実行専用） |
+| M365 Agent | IAM Agent からの構造化指示を受け、Microsoft Graph API 経由でアカウント操作を実行（実行専用） |
+
+> **エージェント責務の境界**：IAM Agent は判断層（何をするか決定）、Google Workspace Agent / M365 Agent は実行層（どう操作するか）。IAM Agent が直接 SDK を呼ぶことはない。この分離により、将来的な対応 IdP の追加時に IAM Agent のロジックを変更せず実行エージェントのみ追加できる。
 
 **プロセス管理エージェント群**
 | エージェント | 責務 |
@@ -134,7 +136,7 @@ AIにブラウザのスクリーンショットおよびDOMを渡し、「どこ
 - MFA 突破のため、Growtect 運用担当者が一度ブラウザでログインし、その Session Cookie を暗号化して WebOps Agent に渡す仕組みを構築
 - Cookie は操作完了後に即時破棄。保存期間はタスク実行中のみ
 - **CAPTCHA への対応方針（規約遵守）**：CAPTCHA バイパスツールの使用は原則禁止。以下の代替手順を採用する：
-  1. 担当者が手動でログインし、CAPTCHA 突破後の Cookie を Sesssion Injection で渡す
+  1. 担当者が手動でログインし、CAPTCHA 突破後の Cookie を Session Injection で渡す
   2. ベンダーに自動化用の専用アカウント（CAPTCHA 免除 IP ホワイトリスト or API 発行）を交渉する
   3. 上記が不可の場合は WebOps Agent の対象外とし、手動運用を継続。無理な自動化は行わない
 
@@ -240,7 +242,7 @@ CREATE POLICY tenant_isolation ON tickets
 - AIによるWrite操作（API実行・設定変更・アカウント操作）は必ず `PENDING_APPROVAL` を経由
 - Slackのインタラクティブメッセージ（Block Kit）で承認/却下ボタンを提示
 - 承認者は権限レベルを事前登録。権限不足者の承認は拒否
-- 承認期限：24時間。期限切れはエスカレーション
+- 承認期限：24時間。期限切れは承認権限の上位者（`it_manager` → `department_head` → `ciso`）へ自動エスカレーション。`ciso` レベルで期限切れの場合は Growtect NOC へ通知し、手動対応に切り替える
 
 **HITL フェーズ別自動化ロードマップ（長期負担軽減）：**
 
@@ -477,6 +479,19 @@ PR マージ時に GitHub Actions / Azure DevOps Pipelines で自動実行。
 
 ---
 
+## 10. 未確定・今後詰める事項
+
+Phase 1 MVP の開発開始前に **P1（必須）** を解消することを必須とする。
+
+| 優先度 | 事項 | アクション | 期限 |
+|---|---|---|---|
+| P1 | LMIS REST API のエンドポイント仕様 | ユニリタ担当者と技術 MTG を設定 | Phase 1 開始前 |
+| P2 | DRESS CODE の API 提供有無・仕様 | ベンダー確認（API 未提供なら WebOps Agent で代替） | Phase 2 開始前 |
+| P2 | KDDI まとめてオフィスの API 仕様・契約要件 | KDDI 担当者に発注 API の有無を確認。未提供なら Procurement/VendorOps をメール送信型に変更 | Phase 2 開始前 |
+| P3 | 本番インフラ：Azure Container Apps vs AWS ECS 最終選定 | コスト試算・SLA 比較を行い最終決定 | Phase 3 開始前 |
+
+---
+
 ## 11. ドキュメント出力手順
 
 ### MDファイル
@@ -490,16 +505,3 @@ pandocが未インストールのため、Python（markdown + weasyprint）で�
 ```
 /home/user/Factory/docs/growtect-pulse-requirements-v1.pdf
 ```
-
----
-
-## 10. 未確定・今後詰める事項
-
-Phase 1 MVP の開発開始前に **P1（必須）** を解消することを必須とする。
-
-| 優先度 | 事項 | アクション | 期限 |
-|---|---|---|---|
-| P1 | LMIS REST API のエンドポイント仕様 | ユニリタ担当者と技術 MTG を設定 | Phase 1 開始前 |
-| P2 | DRESS CODE の API 提供有無・仕様 | ベンダー確認（API 未提供なら WebOps Agent で代替） | Phase 2 開始前 |
-| P2 | KDDI まとめてオフィスの API 仕様・契約要件 | KDDI 担当者に発注 API の有無を確認。未提供なら Procurement/VendorOps をメール送信型に変更 | Phase 2 開始前 |
-| P3 | 本番インフラ：Azure Container Apps vs AWS ECS 最終選定 | コスト試算・SLA 比較を行い最終決定 | Phase 3 開始前 |
