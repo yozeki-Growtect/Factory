@@ -126,6 +126,32 @@ Pulseは「自社開発のHUB」として機能し、各層の外部システム
 - **PIIマスキング**：個人情報（氏名・メールアドレス・電話番号）はAIへ渡す前にマスキング処理
 - **データ国内保持**：全データを国内リージョン（Azure Japan East / AWS ap-northeast-1）に限定
 - **APIトークン暗号化**：SaaSのAPIトークンは `cryptography.Fernet`（AES-128-CBC）で暗号化保存。本番環境ではAzure Key Vault / AWS KMS（HSM相当）で鍵管理
+- **テナント別シークレット分離（Tenant-isolated Secret Management）**：顧客AのAPIキーと顧客BのAPIキーを同一の暗号化コンテキストで扱ってはならない。Key Vault / KMS 上でシークレットのパスをテナントIDで厳密に分離する（例：`secrets/{tenant_id}/google_workspace_api_key`）。テナント単位の鍵ローテーションも独立して実施可能な設計とする
+
+### 3-2-b. マルチテナントデータ分離：PostgreSQL RLS（行レベルセキュリティ）
+
+アプリケーション側の `WHERE tenant_id = ?` クエリだけに頼るデータ分離は、MSPモデルにおいて重大インシデント（他顧客のチケット・CMDB情報の漏洩）のリスクを残す。**DBエンジンレベルで物理的に分離を強制する**ことを必須要件とする。
+
+**実装方針：**
+
+```sql
+-- 全テナント分離対象テーブルに RLS を有効化
+ALTER TABLE tickets ENABLE ROW LEVEL SECURITY;
+ALTER TABLE approvals ENABLE ROW LEVEL SECURITY;
+ALTER TABLE audit_logs ENABLE ROW LEVEL SECURITY;
+ALTER TABLE cmdb_devices ENABLE ROW LEVEL SECURITY;
+ALTER TABLE cmdb_users ENABLE ROW LEVEL SECURITY;
+ALTER TABLE cmdb_services ENABLE ROW LEVEL SECURITY;
+ALTER TABLE knowledge_chunks ENABLE ROW LEVEL SECURITY;
+
+-- ポリシー定義（例：tickets テーブル）
+CREATE POLICY tenant_isolation ON tickets
+  USING (tenant_id = current_setting('app.current_tenant_id')::uuid);
+```
+
+- FastAPI リクエスト処理の冒頭で `SET LOCAL app.current_tenant_id = '{tenant_id}'` を発行し、セッションコンテキストをセット
+- 開発者がクエリで `WHERE tenant_id` を書き忘れても、DBが自動的に他テナントのデータへのアクセスをブロック
+- アプリケーション用 DB ユーザーには `BYPASSRLS` 権限を付与しない（スーパーユーザーのみバイパス可）
 
 ### 3-3. 認証・アクセス制御
 
@@ -164,6 +190,22 @@ Pulseは「自社開発のHUB」として機能し、各層の外部システム
 ### 4-4. コスト提示（Cost-Aware Logic）
 
 - AIが提案する操作には、それによるSaaSコスト・API利用料のランニングコスト増減を必ず併記
+
+### 4-5. LLM Evals（エージェント品質評価）
+
+Reception Agent・Knowledge Agentは自社実装であるため、「回答が正しいか（ハルシネーションしていないか）」を自動テストする仕組みを整備する。Phase 1 には含めないが、Phase 3 以降の運用要件として以下を計画する。
+
+| 評価観点 | 指標 | ツール |
+|---|---|---|
+| RAG回答の忠実性 | Faithfulness（検索結果に基づいているか） | Ragas |
+| 検索精度 | Context Precision / Recall | Ragas |
+| 意図分類の正確性 | 分類カテゴリの混同行列 | pytest + LLM-as-Judge |
+| ハルシネーション検出 | Answer Relevancy | Ragas / DeepEval |
+
+**テストデータの整備方針：**
+- Phase 1〜2 で蓄積した実際のチケット（匿名化済み）をゴールデンデータセットとして使用
+- Growtect エンジニアが「正解」にラベリングしたデータをテストケースとして管理
+- CI/CD パイプラインに組み込み、モデル更新やプロンプト変更時に自動で評価スコアを算出
 
 ---
 
